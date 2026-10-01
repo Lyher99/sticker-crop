@@ -13,18 +13,33 @@ from flask import Flask, jsonify, render_template_string, request, send_file
 from PIL import Image, UnidentifiedImageError
 
 ROOT = Path(__file__).parent
-UPLOADS = ROOT / "uploads"
+DATA_DIR = Path(os.environ.get("DATA_DIR", ROOT))
+UPLOADS = DATA_DIR / "uploads"
 UPLOADS.mkdir(exist_ok=True)
+STICKER_FILES = DATA_DIR / "stickers"
+STICKER_FILES.mkdir(exist_ok=True)
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 80 * 1024 * 1024
 sheets: dict[str, dict] = {}
 stickers: list[dict] = []
-STATE_PATH = ROOT / "project.json"
+STATE_PATH = DATA_DIR / "project.json"
 
 
 def save_state() -> None:
-    payload = {"sheets": [{"id": s["id"], "name": s["name"], "filename": s["path"].name} for s in sheets.values()],
-               "stickers": [{k: v for k, v in s.items() if k != "data"} | {"data": s["data"].hex()} for s in stickers]}
+    sticker_state = []
+    for sticker in stickers:
+        filename = sticker.get("data_file") or f"{uuid4().hex}.png"
+        path = STICKER_FILES / filename
+        if sticker.pop("data_dirty", False) or not path.is_file():
+            temp_image = path.with_suffix(".tmp")
+            temp_image.write_bytes(sticker["data"])
+            temp_image.replace(path)
+        sticker["data_file"] = filename
+        sticker_state.append({k: v for k, v in sticker.items() if k not in {"data", "data_dirty"}})
+    payload = {
+        "sheets": [{"id": s["id"], "name": s["name"], "filename": s["path"].name} for s in sheets.values()],
+        "stickers": sticker_state,
+    }
     temp = STATE_PATH.with_suffix(".tmp")
     temp.write_text(json.dumps(payload), encoding="utf-8")
     temp.replace(STATE_PATH)
@@ -40,7 +55,21 @@ def restore_state() -> None:
             if path.is_file():
                 with Image.open(path) as im:
                     sheets[s["id"]] = {"id": s["id"], "name": Path(s["name"]).name, "path": path, "width": im.width, "height": im.height}
-        stickers.extend({**s, "data": bytes.fromhex(s["data"])} for s in payload.get("stickers", []))
+        migrated = False
+        for sticker in payload.get("stickers", []):
+            if "data" in sticker:
+                sticker["data"] = bytes.fromhex(sticker.pop("data"))
+                sticker["data_dirty"] = True
+                migrated = True
+            elif "data_file" in sticker:
+                filename = Path(sticker["data_file"]).name
+                sticker["data_file"] = filename
+                sticker["data"] = (STICKER_FILES / filename).read_bytes()
+            else:
+                continue
+            stickers.append(sticker)
+        if migrated:
+            save_state()
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
         stickers.clear()
         sheets.clear()
@@ -59,7 +88,7 @@ async function downloadFile(url,filename,button){let old=button&&button.textCont
 function fit(){if(!img)return;let v=$('view').getBoundingClientRect();zoom=Math.min((v.width-36)/img.width,(v.height-36)/img.height,1);offset={x:(v.width-img.width*zoom)/2,y:(v.height-img.height*zoom)/2};draw()}
 function persistDraftNow(){try{let mode=editing?'crop':layoutEditing?'layout':'sheet';localStorage.setItem(DRAFT_KEY,JSON.stringify({version:1,mode,sheetId:active,selection:sel,zoom,offset,editId:editing,layoutId:layoutEditing,drawNewBounds,lockedRatio,layoutParams,layoutPan,layoutViewFactor,returnView:viewBeforeEdit?{active:viewBeforeEdit.active,zoom:viewBeforeEdit.zoom,offset:viewBeforeEdit.offset}:null,lockRatio:$('lockRatio').checked}))}catch{}}function persistDraft(){clearTimeout(draftTimer);draftTimer=setTimeout(persistDraftNow,80)}function readDraft(){try{let d=JSON.parse(localStorage.getItem(DRAFT_KEY)||'null');return d&&d.version===1?d:null}catch{return null}}window.addEventListener('pagehide',persistDraftNow);document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')persistDraftNow()});function resize(){let dpr=devicePixelRatio||1,v=$('view').getBoundingClientRect();canvas.width=v.width*dpr;canvas.height=v.height*dpr;canvas.style.width=v.width+'px';canvas.style.height=v.height+'px';ctx.setTransform(dpr,0,0,dpr,0,0);draw()}
 function draw(){if(!ctx||!canvas.width)return;let v=$('view').getBoundingClientRect();ctx.clearRect(0,0,v.width,v.height);if(layoutEditing){drawLayout();persistDraft();return}if(!img){persistDraft();return}ctx.imageSmoothingEnabled=true;ctx.drawImage(img,offset.x,offset.y,img.width*zoom,img.height*zoom);if(sel){let{x,y,w,h}=sel;$('cropSizeControls').style.display=layoutEditing?'none':'inline-flex';if(document.activeElement!==$('cropWidth'))$('cropWidth').value=Math.round(w);if(document.activeElement!==$('cropHeight'))$('cropHeight').value=Math.round(h);ctx.save();ctx.fillStyle='rgba(0,0,0,.34)';ctx.fillRect(offset.x,offset.y,img.width*zoom,img.height*zoom);ctx.clearRect(offset.x+x*zoom,offset.y+y*zoom,w*zoom,h*zoom);ctx.drawImage(img,x,y,w,h,offset.x+x*zoom,offset.y+y*zoom,w*zoom,h*zoom);ctx.strokeStyle='#54e2c5';ctx.lineWidth=2;ctx.setLineDash([6,3]);ctx.strokeRect(offset.x+x*zoom,offset.y+y*zoom,w*zoom,h*zoom);ctx.setLineDash([]);let handles=[[x,y],[x+w/2,y],[x+w,y],[x,y+h/2],[x+w,y+h/2],[x,y+h],[x+w/2,y+h],[x+w,y+h]];for(let [px,py] of handles){ctx.fillStyle='#fff';ctx.strokeStyle='#008e78';ctx.lineWidth=1;ctx.shadowColor='#071016';ctx.shadowBlur=4;ctx.fillRect(offset.x+px*zoom-6,offset.y+py*zoom-6,12,12);ctx.shadowBlur=0;ctx.strokeRect(offset.x+px*zoom-6,offset.y+py*zoom-6,12,12)}ctx.restore();$('dimensions').textContent=`${Math.round(w)} × ${Math.round(h)} source pixels`;}else{$('cropSizeControls').style.display='none';$('dimensions').textContent='No selection'}persistDraft()}
-function renderSheets(){let box=$('sheets');box.replaceChildren();sheetList.forEach(s=>{let d=document.createElement('div');d.className='sheet'+(active===s.id?' active':'');let im=document.createElement('img');im.src='/api/sheets/'+s.id+'/thumb';let name=document.createElement('span');name.textContent=s.name;d.append(im,name);d.onclick=()=>openSheet(s.id);box.append(d)})}
+function renderSheets(){let box=$('sheets');box.replaceChildren();sheetList.forEach(s=>{let d=document.createElement('div');d.className='sheet'+(active===s.id?' active':'');let im=document.createElement('img');im.src='/api/sheets/'+s.id+'/thumb';let name=document.createElement('span');name.textContent=s.name;let remove=document.createElement('button');remove.type='button';remove.textContent='×';remove.title='Remove image sheet';remove.setAttribute('aria-label','Remove '+s.name);remove.onclick=async e=>{e.stopPropagation();let used=stickers.some(sticker=>sticker.source===s.id);let prompt=used?'This sheet is used by extracted stickers. Removing it will prevent changing their crop. Remove it?':'Remove this image sheet?';if(!confirm(prompt))return;let response=await fetch('/api/sheets/'+s.id,{method:'DELETE'});if(!response.ok)return msg('Could not remove image sheet.');sheetList=sheetList.filter(sheet=>sheet.id!==s.id);if(active===s.id){let next=sheetList[0];if(next)await openSheet(next.id);else{active=null;img=null;sel=null;$('welcome').style.display='';resize();renderSheets()}}else renderSheets()};d.append(im,name,remove);d.onclick=()=>openSheet(s.id);box.append(d)})}
 async function openSheet(id,view=null){let r=await fetch('/api/sheets/'+id);if(!r.ok)return msg('Could not load that image sheet.');try{let blob=await r.blob(),next=new Image();next.src=URL.createObjectURL(blob);await next.decode();img=next;active=id;$('welcome').style.display='none';sel=view&&view.selection?view.selection:null;resize();if(view&&Number.isFinite(view.zoom)&&view.offset){zoom=view.zoom;offset=view.offset;draw()}else fit();renderSheets()}catch{msg('Could not decode that image sheet.')}}
 function renderTray(){let box=$('tray');box.replaceChildren();$('count').textContent=stickers.length;stickers.forEach((s,i)=>{let d=document.createElement('div');d.className='sticker';let im=document.createElement('img');im.src='/api/stickers/'+s.id+'/thumb';im.title='Download PNG';im.onclick=()=>{let url=outputUrl('/api/stickers/'+s.id+'/png');if(url)downloadFile(url,s.name)};let input=document.createElement('input');input.className='name';input.value=s.name;input.setAttribute('aria-label','Sticker filename');input.onchange=async()=>{let r=await fetch('/api/stickers/'+s.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:input.value})});if(r.ok){stickers=await r.json();renderTray()}else msg('Could not rename sticker.')};let edit=document.createElement('button');edit.textContent='Crop';edit.title='Change the source crop bounds';edit.onclick=()=>beginEdit(s.id);let size=document.createElement('button');size.textContent='Size';size.title='Resize and position artwork on the output canvas';size.onclick=()=>beginLayout(s.id);let del=document.createElement('button');del.textContent='×';del.title='Remove sticker';del.onclick=async()=>{stickers=await(await fetch('/api/stickers/'+s.id,{method:'DELETE'})).json();renderTray()};d.append(im,input,edit,size,del);box.append(d)})}
 async function upload(files){for(let f of files){if(!/^image\/(png|jpeg|webp)$/.test(f.type)){msg('Choose PNG, JPG or WebP images.');continue}let fd=new FormData();fd.append('file',f);let r=await fetch('/api/sheets',{method:'POST',body:fd});if(!r.ok){msg((await r.json()).error||'Could not open image.');continue}let s=await r.json();sheetList.push(s);renderSheets();await openSheet(s.id)}}
@@ -82,7 +111,7 @@ canvas.onwheel=e=>{if(layoutEditing){e.preventDefault();layoutViewFactor=Math.ma
 async function extract(){if(!active||!sel)return msg('Select an area of the sheet first.');let r=await fetch('/api/extract',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sheet_id:active,x:Math.floor(sel.x),y:Math.floor(sel.y),w:Math.ceil(sel.w),h:Math.ceil(sel.h)})});if(!r.ok)return msg((await r.json()).error||'Extraction failed.');stickers=await r.json();sel=null;draw();renderTray()}
 $('lockRatio').onchange=()=>{if(sel)lockedRatio=sel.w/sel.h;persistDraft()};$('cropWidth').oninput=()=>changeCropSize('w');$('cropHeight').oninput=()=>changeCropSize('h');function changeCropSize(axis){if(!sel||!img)return;let val=Number(axis==='w'?$('cropWidth').value:$('cropHeight').value);if(!Number.isFinite(val)||val<2)return;let ratio=lockedRatio||sel.w/sel.h;if(axis==='w'){sel.w=Math.min(img.width-sel.x,Math.round(val));if($('lockRatio').checked)sel.h=Math.min(img.height-sel.y,Math.max(2,Math.round(sel.w/ratio)))}else{sel.h=Math.min(img.height-sel.y,Math.round(val));if($('lockRatio').checked)sel.w=Math.min(img.width-sel.x,Math.max(2,Math.round(sel.h*ratio)))}lockedRatio=sel.w/sel.h;draw()}$('extract').onclick=extract;$('saveCrop').onclick=saveCrop;$('saveLayout').onclick=saveLayout;$('cancelLayout').onclick=endLayout;$('layoutScale').oninput=e=>{if(layoutParams){layoutParams.scale=Number(e.target.value)/100;$('scaleValue').textContent=e.target.value+'%';draw()}};$('backEdit').onclick=endEdit;$('redrawCrop').onclick=()=>{drawNewBounds=!drawNewBounds;setEditorUi();persistDraft();msg(drawNewBounds?'Drag a new rectangle around the sticker.':'Drag inside to move or use the handles to adjust.')};$('clear').onclick=()=>{sel=null;draw()};$('fit').onclick=()=>{if(layoutEditing){layoutViewFactor=1;layoutPan={x:0,y:0};draw();return}if(editing&&sel){let v=$('view').getBoundingClientRect();zoom=Math.min(10,Math.max(.05,Math.min((v.width*.72)/sel.w,(v.height*.72)/sel.h)));offset={x:v.width/2-(sel.x+sel.w/2)*zoom,y:v.height/2-(sel.y+sel.h/2)*zoom};draw()}else fit()};$('zoomIn').onclick=()=>zoomCanvas(1.2);$('zoomOut').onclick=()=>zoomCanvas(1/1.2);$('zip').onclick=()=>{if(!stickers.length)return msg('Extract at least one sticker first.');let url=outputUrl('/api/export.zip');if(url)downloadFile(url,'stickers.zip',$('zip'))};
 function zoomCanvas(factor){if(layoutEditing){layoutViewFactor=Math.max(.25,Math.min(4,layoutViewFactor*factor));draw();return}if(!img)return;let v=$('view').getBoundingClientRect(),cx=v.width/2,cy=v.height/2,wx=(cx-offset.x)/zoom,wy=(cy-offset.y)/zoom,next=Math.max(.05,Math.min(10,zoom*factor));offset={x:cx-wx*next,y:cy-wy*next};zoom=next;draw()}window.onkeydown=e=>{if(e.target.matches('input,textarea,select,[contenteditable=true]'))return;if(e.code==='Space'){if(document.activeElement===canvas||canvas.matches(':hover')){spaceDown=true;e.preventDefault()}return}if(document.activeElement!==canvas)return;if((e.ctrlKey||e.metaKey)&&(e.key==='+'||e.key==='=')){e.preventDefault();zoomCanvas(1.2);return}if((e.ctrlKey||e.metaKey)&&e.key==='-'){e.preventDefault();zoomCanvas(1/1.2);return}if(e.key==='+'||e.key==='='){e.preventDefault();zoomCanvas(1.2);return}if(e.key==='-'){e.preventDefault();zoomCanvas(1/1.2);return}if(e.key.toLowerCase()==='f'){e.preventDefault();$('fit').click();return}if(e.key.startsWith('Arrow')){if(!sel&&!layoutEditing)return;e.preventDefault();let step=e.shiftKey?10:1,dx=e.key==='ArrowLeft'?-step:e.key==='ArrowRight'?step:0,dy=e.key==='ArrowUp'?-step:e.key==='ArrowDown'?step:0;if(layoutEditing){layoutParams.dx+=dx;layoutParams.dy+=dy}else if(sel&&img){sel.x=clamp(sel.x+dx,img.width-sel.w);sel.y=clamp(sel.y+dy,img.height-sel.h)}draw();return}if(e.key==='Enter'){e.preventDefault();layoutEditing?saveLayout():editing?saveCrop():extract()}if(e.key==='Escape'){if(layoutEditing)endLayout();else if(editing)endEdit();else{sel=null;draw()}}};window.onkeyup=e=>{if(e.code==='Space')spaceDown=false};window.onblur=()=>{spaceDown=false;drag=null;layoutDragging=null};
-async function init(){try{let pref=JSON.parse(localStorage.getItem('sticker-output')||'{}');$('customOutput').checked=!!pref.enabled;if(pref.width)$('outputWidth').value=pref.width;if(pref.height)$('outputHeight').value=pref.height}catch{}$('customOutput').onchange=saveOutputPrefs;function outputDimensionChanged(){saveOutputPrefs();if(layoutEditing)try{let d=outputDims();layoutParams.width=d.width;layoutParams.height=d.height;layoutParams.dx=0;layoutParams.dy=0;draw()}catch(e){msg(e.message)}}$('outputWidth').oninput=outputDimensionChanged;$('outputHeight').oninput=outputDimensionChanged;let d=await(await fetch('/api/state')).json();sheetList=d.sheets;stickers=d.stickers;renderSheets();renderTray();let draft=readDraft();if(draft&&draft.mode==='crop'&&stickers.some(s=>s.id===draft.editId)){await beginEdit(draft.editId,draft);msg('Restored your crop editing session.');return}if(draft&&draft.mode==='layout'&&stickers.some(s=>s.id===draft.layoutId)){await beginLayout(draft.layoutId,draft);msg('Restored your size editing session.');return}if(draft&&sheetList.some(s=>s.id===draft.sheetId)){await openSheet(draft.sheetId,draft);return}if(sheetList.length)await openSheet(sheetList[0].id)}init();
+document.addEventListener('keydown',e=>{if(e.code==='Space'&&!e.target.matches('input,textarea,select,[contenteditable=true]')&&($('view').matches(':hover')||document.activeElement===canvas)){spaceDown=true;canvas.style.cursor='grab';e.preventDefault()}},true);document.addEventListener('keyup',e=>{if(e.code==='Space'){spaceDown=false;canvas.style.cursor='crosshair'}},true);async function init(){try{let pref=JSON.parse(localStorage.getItem('sticker-output')||'{}');$('customOutput').checked=!!pref.enabled;if(pref.width)$('outputWidth').value=pref.width;if(pref.height)$('outputHeight').value=pref.height}catch{}$('customOutput').onchange=saveOutputPrefs;function outputDimensionChanged(){saveOutputPrefs();if(layoutEditing)try{let d=outputDims();layoutParams.width=d.width;layoutParams.height=d.height;layoutParams.dx=0;layoutParams.dy=0;draw()}catch(e){msg(e.message)}}$('outputWidth').oninput=outputDimensionChanged;$('outputHeight').oninput=outputDimensionChanged;let d=await(await fetch('/api/state')).json();sheetList=d.sheets;stickers=d.stickers;renderSheets();renderTray();let draft=readDraft();if(draft&&draft.mode==='crop'&&stickers.some(s=>s.id===draft.editId)){await beginEdit(draft.editId,draft);msg('Restored your crop editing session.');return}if(draft&&draft.mode==='layout'&&stickers.some(s=>s.id===draft.layoutId)){await beginLayout(draft.layoutId,draft);msg('Restored your size editing session.');return}if(draft&&sheetList.some(s=>s.id===draft.sheetId)){await openSheet(draft.sheetId,draft);return}if(sheetList.length)await openSheet(sheetList[0].id)}init();
 </script></body></html>'''
 
 
@@ -102,7 +131,7 @@ def safe_name(name: str) -> str:
 
 
 def public_stickers() -> list[dict]:
-    return [{k: v for k, v in s.items() if k != "data"} for s in stickers]
+    return [{k: v for k, v in s.items() if k not in {"data", "data_file", "data_dirty"}} for s in stickers]
 
 
 def export_image(sticker: dict, width: int | None, height: int | None) -> bytes:
@@ -188,6 +217,16 @@ def sheet_image(sid):
     return send_file(item["path"]) if item else ("Not found", 404)
 
 
+@app.delete("/api/sheets/<sid>")
+def delete_sheet(sid):
+    item = sheets.pop(sid, None)
+    if not item:
+        return jsonify(error="Image sheet not found."), 404
+    item["path"].unlink(missing_ok=True)
+    save_state()
+    return jsonify(ok=True)
+
+
 @app.get("/api/sheets/<sid>/thumb")
 def sheet_thumb(sid):
     try:
@@ -217,7 +256,7 @@ def extract():
     buf = io.BytesIO()
     crop.save(buf, "PNG")
     seq = len(stickers) + 1
-    stickers.append({"id": uuid4().hex, "name": f"sticker-{seq:03d}.png", "data": buf.getvalue(), "width": crop.width, "height": crop.height, "source": data["sheet_id"], "bounds": [x0, y0, x1, y1]})
+    stickers.append({"id": uuid4().hex, "name": f"sticker-{seq:03d}.png", "data": buf.getvalue(), "data_dirty": True, "width": crop.width, "height": crop.height, "source": data["sheet_id"], "bounds": [x0, y0, x1, y1]})
     save_state()
     return jsonify(public_stickers())
 
@@ -272,7 +311,7 @@ def recrop_sticker(sid):
     crop = source.crop((x0, y0, x1, y1))
     buf = io.BytesIO()
     crop.save(buf, "PNG")
-    sticker.update(data=buf.getvalue(), width=crop.width, height=crop.height, bounds=[x0, y0, x1, y1])
+    sticker.update(data=buf.getvalue(), data_dirty=True, width=crop.width, height=crop.height, bounds=[x0, y0, x1, y1])
     save_state()
     return jsonify(public_stickers())
 
@@ -303,7 +342,9 @@ def sticker_item(sid):
     if idx is None:
         return jsonify(error="Sticker not found."), 404
     if request.method == "DELETE":
-        stickers.pop(idx)
+        removed = stickers.pop(idx)
+        if removed.get("data_file"):
+            (STICKER_FILES / Path(removed["data_file"]).name).unlink(missing_ok=True)
     else:
         stickers[idx]["name"] = safe_name(str((request.get_json() or {}).get("name", "sticker")))
         if not stickers[idx]["name"].lower().endswith(".png"):

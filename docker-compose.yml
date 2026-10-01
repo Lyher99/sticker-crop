@@ -1,0 +1,20 @@
+services:
+  sticker-crop:
+    build: .
+    container_name: sticker_crop_app
+    restart: unless-stopped
+    expose:
+      - "5000"
+    volumes:
+      - ./data:/app/data
+    networks:
+      proxy:
+        aliases:
+          - sticker_crop_app
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  proxy:
+    external: true
+    name: discord-steav-jor_kodesahakom_default

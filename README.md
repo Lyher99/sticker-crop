@@ -25,7 +25,7 @@ Open http://127.0.0.1:5000. The current environment used Python 3.13.3. Stop the
 6. Use the mouse wheel to zoom around the pointer, hold Space and drag to pan, or use the zoom buttons and **Fit sheet/Fit crop/Fit canvas** controls.
 7. Rename a sticker in the right tray. Click its thumbnail to download a PNG, or download all items in a ZIP. Turn on **Use custom output canvas** to export every item on a chosen canvas such as 750 by 750. Items with saved **Size** layouts retain their scale and position when the canvas dimensions match. Other items are centered and scaled to fit without stretching; unused canvas space stays transparent.
 
-The tray and imported sheets are saved in `project.json` and `uploads/` and restored when the server restarts. The browser also saves your active sheet view and unfinished crop/size editing session, so refreshing the page restores your selection and in-progress adjustments. Keep these files together to retain the project. Delete them to clear the local project.
+The tray and imported sheets are saved in `project.json`, `uploads/`, and `stickers/` and restored when the server restarts. `project.json` stores project metadata; each extracted sticker is stored as its own PNG in `stickers/`. Older projects that stored sticker data inside `project.json` are migrated automatically at startup. The browser also saves your active sheet view and unfinished crop/size editing session, so refreshing the page restores your selection and in-progress adjustments. Keep these files together to retain the project. Delete them to clear the local project.
 
 ## Keyboard and export
 
