@@ -3,3 +3,7 @@ __pycache__/
 uploads/
 project.json
 *.tmp
+
+# Local project images and browser/server state
+data/
+stickers/
